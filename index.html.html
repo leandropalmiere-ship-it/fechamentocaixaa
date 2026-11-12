@@ -1,0 +1,308 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fechamento Consolidado de Caixa</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="theme-controls">
+        <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" onclick="alternarTema()">
+            Ativar fundo preto
+        </button>
+    </div>
+    <header class="page-header">
+        <img class="logo" src="logo-indigo.jpg" alt="Logotipo INDIGO">
+        <h2>Calculadora de Fechamento de Caixa - Perto + Softcase</h2>
+    </header>
+
+    <div class="camp-group">
+        <label for="pdfPerto">Relatório Perto (PDF):</label>
+        <input type="file" id="pdfPerto" accept=".pdf">
+    </div>
+
+    <div class="camp-group">
+        <label for="pdfSoftcase">Relatório Softcase (PDF):</label>
+        <input type="file" id="pdfSoftcase" accept=".pdf">
+    </div>
+
+    <button class="btn-processar" onclick="processarFechamento()">Processar e Somar Totais</button>
+
+    <div id="painelResultado" class="resultado">
+        <h3>Resumo Detalhado por Bandeira</h3>
+        <div id="tabelaConteudo"></div>
+    </div>
+</div>
+
+<footer class="rodape">
+    Site desenvolvido por Leandro Palmieri — Mat.: 33069
+</footer>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    function alternarTema() {
+        const temaEscuroAtivo = document.body.classList.toggle('tema-escuro');
+        const botaoTema = document.getElementById('themeToggle');
+        botaoTema.textContent = temaEscuroAtivo ? 'Ativar fundo claro' : 'Ativar fundo preto';
+        botaoTema.setAttribute('aria-pressed', String(temaEscuroAtivo));
+    }
+
+    function limparValorMoeda(valor) {
+        if (valor === null || valor === undefined || valor === '') return 0;
+        const texto = String(valor)
+            .replace(/R\$/gi, '')
+            .replace(/\./g, '')
+            .replace(',', '.')
+            .trim();
+        const numero = parseFloat(texto);
+        return Number.isNaN(numero) ? 0 : numero;
+    }
+
+    async function extrairTextoPDF(fileInput, reconstruirLinhas = false) {
+        if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+            return '';
+        }
+
+        const arrayBuffer = await fileInput.files[0].arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        let textoCompleto = '';
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            if (reconstruirLinhas) {
+                const itens = content.items
+                    .filter(item => typeof item.str === 'string' && item.str.trim())
+                    .map(item => ({
+                        texto: item.str.trim(),
+                        x: item.transform[4],
+                        y: item.transform[5]
+                    }))
+                    .sort((a, b) => b.y - a.y || a.x - b.x);
+                const linhas = [];
+
+                for (const item of itens) {
+                    let linha = linhas[linhas.length - 1];
+                    if (!linha || Math.abs(linha.y - item.y) > 2) {
+                        linha = { y: item.y, itens: [] };
+                        linhas.push(linha);
+                    }
+                    linha.itens.push(item);
+                }
+
+                textoCompleto += linhas
+                    .map(linha => linha.itens.sort((a, b) => a.x - b.x).map(item => item.texto).join(' '))
+                    .join('\n') + '\n';
+            } else {
+                const strings = content.items.map(item => typeof item.str === 'string' ? item.str : '');
+                textoCompleto += strings.join('\n') + '\n';
+            }
+        }
+
+        return textoCompleto;
+    }
+
+    function normalizarCategoria(nome) {
+        const n = (nome || '').toUpperCase().replace(/\s+/g, ' ').trim();
+        if (!n) return 'OUTROS';
+        if (n === 'DINHEIRO') return 'DINHEIRO';
+        if (n.includes('PIX')) return 'PIX';
+        if (n.includes('MOBILE')) return 'MOBILE';
+        if (n.includes('SEM PARAR')) return 'TAG - SEM PARAR';
+        if (n.includes('CONECTCAR')) return 'TAG - CONECTCAR';
+        if (n.includes('VELOE')) return 'TAG - VELOE';
+
+        if (n.includes('MAESTRO')) return 'DÉBITO MAESTRO';
+
+        if (n.includes('DÉBITO') || n.includes('DEBITO') || n.includes('VISA_ELECTRON')) {
+            if (n.includes('VISA')) return 'DÉBITO VISA';
+            if (n.includes('MASTER')) return 'DÉBITO MASTERCARD';
+            if (n.includes('ELO')) return 'DÉBITO ELO';
+            return 'DÉBITO OUTROS';
+        }
+
+        if (n.includes('CRÉDITO') || n.includes('CREDITO') || n.includes('AMEX')) {
+            if (n.includes('VISA')) return 'CRÉDITO VISA';
+            if (n.includes('MASTER')) return 'CRÉDITO MASTERCARD';
+            if (n.includes('ELO')) return 'CRÉDITO ELO';
+            if (n.includes('AMEX')) return 'CRÉDITO AMEX';
+            return 'CRÉDITO OUTROS';
+        }
+
+        return n;
+    }
+
+    function extrairPerto(texto) {
+        const itens = {};
+        const linhas = (texto || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+
+        for (let i = 0; i < linhas.length; i++) {
+            const linha = linhas[i];
+            const nomeUpper = linha.toUpperCase();
+
+            if (nomeUpper.includes('OPERAÇÕES') || nomeUpper === 'TOTAL') break;
+
+            const ehForma = /^(PIX|TAG\s*-|CARTÃO DE|DINHEIRO|MOBILE)/i.test(linha);
+            if (!ehForma) continue;
+
+            const categoria = normalizarCategoria(linha.replace('|', '').trim());
+            let qtd = 0;
+            let valor = 0;
+
+            for (let j = i + 1; j < Math.min(i + 5, linhas.length); j++) {
+                const sub = linhas[j].replace('|', '').trim();
+                if (/^(PIX|TAG\s*-|CARTÃO DE|DINHEIRO|MOBILE)/i.test(sub)) break;
+
+                if (/^\d+$/.test(sub) && qtd === 0) {
+                    qtd = parseInt(sub, 10);
+                }
+
+                if (sub.includes('R$') && valor === 0) {
+                    valor = limparValorMoeda(sub);
+                }
+            }
+
+            if (qtd > 0 || valor > 0) {
+                itens[categoria] = { qtd, valor };
+            }
+        }
+
+        return itens;
+    }
+
+    function extrairSoftcase(texto) {
+        const itens = {};
+        const padroes = [
+            { regex: /^(DINHEIRO)\s*:?\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'DINHEIRO' },
+            { regex: /^(CREDITO\s+AMEX)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'CRÉDITO AMEX' },
+            { regex: /^(CREDITO\s+ELO)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'CRÉDITO ELO' },
+            { regex: /^(CREDITO\s+MASTERCARD)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'CRÉDITO MASTERCARD' },
+            { regex: /^(CREDITO\s+VISA)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'CRÉDITO VISA' },
+            { regex: /^(DEBITO\s+ELO)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'DÉBITO ELO' },
+            { regex: /^(DEBITO\s+MAESTRO)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'DÉBITO MAESTRO' },
+            { regex: /^(DEBITO\s+MASTERCARD)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'DÉBITO MASTERCARD' },
+            { regex: /^(DEBITO\s+VISA_ELECTRON)\s*(\d+)\s*R\s*\$\s*([\d\.,]+)/i, cat: 'DÉBITO VISA' }
+        ];
+
+        const linhas = (texto || '').replace(/\r/g, '').split('\n').map(linha => linha.trim()).filter(Boolean);
+
+        for (const linha of linhas) {
+            for (const regra of padroes) {
+                const match = linha.match(regra.regex);
+                if (!match) continue;
+
+                const qtd = parseInt(match[2], 10);
+                const valor = limparValorMoeda(match[3]);
+
+                if (!Number.isNaN(qtd) && !Number.isNaN(valor)) {
+                    if (!itens[regra.cat]) itens[regra.cat] = { qtd: 0, valor: 0 };
+                    itens[regra.cat].qtd += qtd;
+                    itens[regra.cat].valor += valor;
+                }
+                break;
+            }
+        }
+
+        return itens;
+    }
+
+    function formatarMoeda(valor) {
+        return `R$ ${Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    async function processarFechamento() {
+        const inputPerto = document.getElementById('pdfPerto');
+        const inputSoftcase = document.getElementById('pdfSoftcase');
+        const temPerto = Boolean(inputPerto.files[0]);
+        const temSoftcase = Boolean(inputSoftcase.files[0]);
+
+        if (!temPerto && !temSoftcase) {
+            alert('Selecione pelo menos um relatório PDF (Perto ou Softcase) antes de processar.');
+            return;
+        }
+
+        const textoPerto = temPerto ? await extrairTextoPDF(inputPerto) : '';
+        const textoSoftcase = temSoftcase ? await extrairTextoPDF(inputSoftcase, true) : '';
+
+        const itensPerto = extrairPerto(textoPerto);
+        const itensSoftcase = extrairSoftcase(textoSoftcase);
+
+        if (temPerto && Object.keys(itensPerto).length === 0) {
+            alert('Não foi possível identificar valores no relatório Perto. Verifique se o PDF contém texto selecionável e se corresponde ao modelo esperado.');
+            return;
+        }
+
+        if (temSoftcase && Object.keys(itensSoftcase).length === 0) {
+            alert('Não foi possível identificar os valores da Softcase. Verifique se o PDF contém texto selecionável e se corresponde ao modelo esperado.');
+            return;
+        }
+
+        const todasCategorias = Array.from(new Set([...Object.keys(itensPerto), ...Object.keys(itensSoftcase)])).sort();
+
+        let totalQtdGeral = 0;
+        let totalValorGeral = 0;
+        let totalQtdPerto = 0;
+        let totalValorPerto = 0;
+        let totalQtdSoftcase = 0;
+        let totalValorSoftcase = 0;
+
+        let htmlTabela = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Forma / Bandeira</th>
+                        <th class="text-center">Perto (Qtd | R$)</th>
+                        <th class="text-center">Softcase (Qtd | R$)</th>
+                        <th class="text-right">Total Consolidado</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        todasCategorias.forEach(cat => {
+            const p = itensPerto[cat] || { qtd: 0, valor: 0 };
+            const s = itensSoftcase[cat] || { qtd: 0, valor: 0 };
+            const totalQtd = p.qtd + s.qtd;
+            const totalValor = p.valor + s.valor;
+
+            totalQtdPerto += p.qtd;
+            totalValorPerto += p.valor;
+            totalQtdSoftcase += s.qtd;
+            totalValorSoftcase += s.valor;
+            totalQtdGeral += totalQtd;
+            totalValorGeral += totalValor;
+
+            htmlTabela += `
+                <tr>
+                    <td>${cat}</td>
+                    <td class="text-center">${p.qtd} | ${formatarMoeda(p.valor)}</td>
+                    <td class="text-center">${s.qtd} | ${formatarMoeda(s.valor)}</td>
+                    <td class="text-right">${totalQtd} | ${formatarMoeda(totalValor)}</td>
+                </tr>
+            `;
+        });
+
+        htmlTabela += `
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td><strong>TOTAL GERAL</strong></td>
+                        <td class="text-center"><strong>${totalQtdPerto} | ${formatarMoeda(totalValorPerto)}</strong></td>
+                        <td class="text-center"><strong>${totalQtdSoftcase} | ${formatarMoeda(totalValorSoftcase)}</strong></td>
+                        <td class="text-right"><strong>${totalQtdGeral} | ${formatarMoeda(totalValorGeral)}</strong></td>
+                    </tr>
+                </tfoot>
+            </table>
+        `;
+
+        document.getElementById('tabelaConteudo').innerHTML = htmlTabela;
+        document.getElementById('painelResultado').style.display = 'block';
+    }
+</script>
+</body>
+</html>
